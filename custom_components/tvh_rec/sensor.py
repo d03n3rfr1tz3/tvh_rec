@@ -12,8 +12,8 @@ def fetch_data(a, url, recs):
     'sort': 'start_real',
     'dir': 'ASC',
     'groupBy': 'false',
-    'groupDir':
-    'ASC', 'duplicates': 0
+    'groupDir': 'ASC',
+    'duplicates': 0
   }
 
   r = requests.post('%s/api/dvr/entry/grid_upcoming' % url, data=d, auth=a)
@@ -22,27 +22,44 @@ def fetch_data(a, url, recs):
     return {'status': requests.status_codes._codes[r.status_code][0]}
 
   s = {
-    'count': r.json()['total']
+    'count': r.json()['total'],
+    'recordings': [],
+    'status': 'idle'
   }
 
   if r.json()['entries']:
-    from datetime import timedelta
-    s['ent'] = []
+    ispreparing = False
+    isrecording = False
+    currenttime = time.time()
+    
     for e in r.json()['entries']:
+      if currenttime >= (e.get('start_real') - 300) and currenttime <= (e.get('stop_real') + 300):
+        ispreparing = True
+      
+      if currenttime >= e.get('start_real') and currenttime <= e.get('stop_real'):
+        isrecording = True
+      
       _s = {
         'status': e.get('status'),
         'channelname': e.get('channelname'),
-        'disp_title': e.get('disp_title'),
-        'disp_subtitle': e.get('disp_subtitle'),
+        'title': e.get('disp_title'),
+        'subtitle': e.get('disp_subtitle'),
         'channel_icon': e.get('channel_icon'),
         'start': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(e.get('start'))),
+        'start_real': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(e.get('start_real'))),
+        'stop': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(e.get('stop'))),
+        'stop_real': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(e.get('stop_real'))),
         'duration': e.get('duration'),
-        'episode_disp': e.get('episode_disp'),
+                                              
         'image': e.get('image'),
       }
-      s['ent'].append(_s)
-  else:
-    s ['status'] = 'idle'
+      s['recordings'].append(_s)
+    
+    if ispreparing:
+      s['status'] = 'preparing'
+    
+    if isrecording:
+      s['status'] = 'recording'
 
   return s
 
@@ -103,7 +120,18 @@ else:
       self._name = name
       self._cnt = cnt
       self._auth = requests.auth.HTTPDigestAuth(usr, passwd)
-      self._data = self._fetch(self._auth, self._url, self._cnt)
+      self._data = {
+        'count': 0,
+        'recordings': [],
+        'status': 'initializing'
+      }
+      
+      try:
+        self._data = self._fetch(self._auth, self._url, self._cnt)
+        _LOGGER.debug("Data = %s", self._data)
+      except requests.exceptions.ConnectionError:
+        if self._data['status'] != 'initializing': self._data['status'] = 'offline'
+        _LOGGER.error("Could not connect to tvheadend")
 
     @property
     def should_poll(self):
@@ -118,6 +146,9 @@ else:
     @property
     def state(self):
       """Return the state of the sensor."""
+      if self._data['status'] != 'idle' and self._data['status'] != 'preparing' and self._data['status'] != 'recording' and self._data['status'] != 'offline':
+        return None;
+      
       return str(self._data['count'])
 
     @property
@@ -134,44 +165,34 @@ else:
     def extra_state_attributes(self):
       """Return the state attributes."""
       attr = {
-           ATTR_ATTRIBUTION: CONF_ATTRIBUTION,
-           'url': self._url
-         }
+        ATTR_ATTRIBUTION: CONF_ATTRIBUTION,
+        'url': self._url,
+      }
 
       _data = self._data
-      card_json = [
-        {
-          'title_default': '$title',
-          'line1_default': '$episode',
-          'line2_default': '$studio $release',
-          'line3_default': '$runtime $date $time',
-          'line4_default': '$number',
-          'icon': 'mdi:arrow-down-bold'
+      attr['count'] = _data['count']
+      attr['status'] = _data['status']
+      
+      for i, d in enumerate(_data['recordings']):
+        recording = {
+          'status': d['status'],
+          'title': d['title'],
+          'subtitle': d['subtitle'],
+          'channelname': d['channelname'],
+          'channel_icon': self._url + '/' + d['channel_icon'],
+          'start': d['start'],
+          'start_real': d['start_real'],
+          'stop': d['stop'],
+          'stop_real': d['stop_real'],
+          'duration': d['duration'],
         }
-      ]
 
-      if 'ent' in _data.keys():
-        for d in _data.pop('ent'):
-          card_item = {}
-          card_item['airdate'] = d['start']
-          card_item['title'] = d['disp_title'][:20]
-          card_item['episode'] = d['disp_subtitle']
-          card_item['number'] = d['episode_disp']
-          card_item['runtime'] = d['duration'] // 60
-          card_item['studio'] = d['channelname']
-          card_item['release'] = d['status']
-
-          if d['image']:
-            card_item['fanart'] = d['image']
-            card_item['poster'] = d['channel_icon']
-          else:
-            card_item['fanart'] = d['channel_icon']
-            card_item['poster'] = d['image']
-
-          card_json.append(card_item)
-
-      attr.update(_data)
-      attr['data'] = j.dumps(card_json)
+        if d['image']:
+          recording['image'] = self._url + '/' + d['image']
+        else:
+          recording['image'] = self._url + '/' + d['channel_icon']
+        
+        attr['recording' + str(i)] = recording
 
       return attr
 
@@ -180,6 +201,9 @@ else:
       try:
         self._data = self._fetch(self._auth, self._url, self._cnt)
         _LOGGER.debug("Data = %s", self._data)
+      except requests.exceptions.ConnectionError:
+        if self._data['status'] != 'initializing': self._data['status'] = 'offline'
+        _LOGGER.error("Could not connect to tvheadend")
       except ValueError as err:
         _LOGGER.error("Check tvh %s", err.args)
         raise
