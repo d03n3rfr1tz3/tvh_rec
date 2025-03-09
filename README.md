@@ -10,6 +10,4 @@ sensor:
     scan_interval: 600
     count: 3
 ```
-![Screenshot](https://github.com/kodi1/tvh_rec/blob/master/images/tvh_rec.png?raw=true)
-
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge)](https://github.com/custom-components/hacs)
